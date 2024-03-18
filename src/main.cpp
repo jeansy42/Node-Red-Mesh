@@ -11,12 +11,14 @@
 
 uint32_t rootId;
 int actionerPin = D4;
+bool shouldReinit = false;
 
 painlessMesh meshNode;
 Scheduler userScheduler;
 
 Task taskWaitingForConfigurations(TASK_SECOND * 5, TASK_FOREVER, &waitingForConfiguratios);
 Task taskSendActionerInformation(TASK_SECOND, TASK_FOREVER, &sendActionerInfo);
+Task taskVerifyIfShouldReinit(TASK_SECOND * 3, TASK_FOREVER, &verifyIfShouldReinit);
 
 void receivedCallback(uint32_t from, String &msg);
 
@@ -26,6 +28,11 @@ void setup()
   Serial.begin(115200);
   if (!initLittleFS())
     return;
+  /* bool state = LittleFS.format();
+  if (state)
+    Serial.println("LittleFS formatado corretamente");
+  else
+    return; */
   createArchiveConfigJSON();
   meshNode.setDebugMsgTypes(ERROR | STARTUP);
   meshNode.init(MESH_PREFIX, MESH_PASSWORD, &userScheduler, MESH_PORT);
@@ -35,6 +42,9 @@ void setup()
   // Agregando tarefas
   userScheduler.addTask(taskWaitingForConfigurations);
   userScheduler.addTask(taskSendActionerInformation);
+  userScheduler.addTask(taskVerifyIfShouldReinit);
+
+  taskVerifyIfShouldReinit.enable();
 
   if (isConfigJsonEmpty())
   {

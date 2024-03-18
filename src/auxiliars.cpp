@@ -1,9 +1,13 @@
 #include "LittleFS.h"
+#include "FS.h"
 #include "ArduinoJson.h"
 #include "painlessMesh.h"
 
+extern uint32_t rootId;
+extern bool shouldReinit;
 extern int actionerPin;
 extern Task taskSendActionerInformation;
+extern painlessMesh meshNode;
 
 void createArchiveConfigJSON()
 
@@ -12,7 +16,7 @@ void createArchiveConfigJSON()
     if (!LittleFS.exists(path))
     {
 
-        Serial.printf("Criando arquivo: %s", path);
+        Serial.printf("Criando arquivo: %s", path.c_str());
         File file = LittleFS.open(path, "w");
         if (!file)
         {
@@ -20,7 +24,7 @@ void createArchiveConfigJSON()
         }
         else
         {
-            Serial.printf("%s criado com sucesso \n", path);
+            Serial.printf("%s criado com sucesso \n", path.c_str());
         }
         file.close();
     }
@@ -31,7 +35,7 @@ String sendJsonResponseFromFile(String path)
     if (!LittleFS.exists(path))
     {
         JsonDocument doc;
-        JsonArray array = doc.to<JsonArray>();
+        doc.to<JsonArray>();
         String emptyArray = doc.as<String>();
         return emptyArray;
     }
@@ -48,13 +52,13 @@ void setArchiveConfigJSON(JsonArray array)
     String path = "/config.json";
     if (!LittleFS.exists(path))
     {
-        Serial.printf("O arquivo na ruta %s no existe", path);
+        Serial.printf("O arquivo na ruta %s no existe", path.c_str());
         createArchiveConfigJSON();
     };
     File file = LittleFS.open(path, "w");
     if (!file)
     {
-        Serial.printf("Error ao abrir o arquivo na ruta %s", path);
+        Serial.printf("Error ao abrir o arquivo na ruta %s", path.c_str());
     }
     else
     {
@@ -64,10 +68,15 @@ void setArchiveConfigJSON(JsonArray array)
             doc.to<JsonArray>().add(obj);
         };
         serializeJson(doc, file);
-        Serial.println("Configuracao atualizada com sucesso.");
-        Serial.println("Resetando dispositivo...");
         file.close();
-        ESP.restart();
+        Serial.println("Configuracao atualizada com sucesso.");
+        Serial.println("Enviando confirmação ao hub...");
+
+        shouldReinit = meshNode.sendSingle(rootId, "configOk");
+        if (shouldReinit)
+            Serial.println("--->Confirmacao ao hub enviada com sucesso");
+        else
+            Serial.println("--->Ocurreu algum erro ao enviar a confirmacao ao hub");
     };
 };
 
@@ -109,6 +118,15 @@ void startConfiguration()
             }
         }
     };
+}
+
+void verifyIfShouldReinit()
+{
+    if (shouldReinit)
+    {
+        Serial.println("Reiniciando no....");
+        ESP.restart();
+    }
 }
 
 // Confire se o arquivo config.json está vacio

@@ -2,7 +2,8 @@
 #define AUXILIARS_H
 
 void createArchiveConfigJSON();
-void setArchiveConfigJSON(JsonArray array);
+void verifyIfShouldReinit();
+bool setArchiveConfigJSON(JsonArray array);
 String sendJsonResponseFromFile(String path);
 void waitingForConfiguratios();
 void startConfiguration();
