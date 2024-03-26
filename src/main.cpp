@@ -1,26 +1,30 @@
 #include <Arduino.h>
+#include <ESP8266WiFi.h>
+#include <ESPAsyncWebServer.h>
+#include <ESPAsyncTCP.h>
 #include "painlessMesh.h"
 #include "ArduinoJson.h"
 #include "LittleFS.h"
 #include "auxiliars.h"
 #include "meshManager.h"
+#include "tasksNodeManager.h"
+#include "routesNodeHandler.h"
 
-#define MESH_PREFIX "Soluforce"
-#define MESH_PASSWORD "soluforcesenha"
-#define MESH_PORT 5555
+String nodeSsid;
+String nodePassword;
+uint16_t nodePort;
 
 uint32_t rootId;
 int actionerPin = D4;
+int doorSensor = D1;
+int doorSensorState;
 bool shouldReinit = false;
+bool nodeRedMeshConfigState;
+fs::FS nodeFilesystem = LittleFS;
 
 painlessMesh meshNode;
 Scheduler userScheduler;
-
-Task taskWaitingForConfigurations(TASK_SECOND * 5, TASK_FOREVER, &waitingForConfiguratios);
-Task taskSendActionerInformation(TASK_SECOND, TASK_FOREVER, &sendActionerInfo);
-Task taskVerifyIfShouldReinit(TASK_SECOND * 3, TASK_FOREVER, &verifyIfShouldReinit);
-
-void receivedCallback(uint32_t from, String &msg);
+AsyncWebServer nodeServer(80);
 
 void setup()
 {
@@ -33,56 +37,63 @@ void setup()
     Serial.println("LittleFS formatado corretamente");
   else
     return; */
-  createArchiveConfigJSON();
-  meshNode.setDebugMsgTypes(ERROR | STARTUP);
-  meshNode.init(MESH_PREFIX, MESH_PASSWORD, &userScheduler, MESH_PORT);
-  meshNode.onReceive(&receivedCallback);
-  meshNode.setContainsRoot(true);
+  createNodeConfigMeshIfNotExists(&nodeFilesystem);
+  nodeRedMeshConfigState = isNodeRedMeshConfig();
+  createArchiveConfigJSON(&nodeFilesystem);
 
-  // Agregando tarefas
-  userScheduler.addTask(taskWaitingForConfigurations);
-  userScheduler.addTask(taskSendActionerInformation);
-  userScheduler.addTask(taskVerifyIfShouldReinit);
-
-  taskVerifyIfShouldReinit.enable();
-
-  if (isConfigJsonEmpty())
+  if (nodeRedMeshConfigState)
   {
-    taskWaitingForConfigurations.enable();
+    meshNode.setDebugMsgTypes(ERROR | STARTUP);
+    meshNode.init(nodeSsid, nodePassword, &userScheduler, nodePort);
+    meshNode.onReceive(&receivedCallback);
+
+    meshNode.setContainsRoot(true);
+
+    // Agregando tarefas
+
+    IPAddress myAPIP = meshNode.getAPIP();
+    Serial.println("My AP IP is " + myAPIP.toString());
+
+    if (isConfigJsonEmpty(&nodeFilesystem))
+    {
+      userScheduler.addTask(taskWaitingForConfigurations);
+      taskWaitingForConfigurations.enable();
+    }
+    else
+    {
+      userScheduler.addTask(taskSendActionerInformation);
+      userScheduler.addTask(taskGetDoorSensorInfo);
+      userScheduler.addTask(taskSendDoorSensorInfo);
+      startConfiguration(&nodeFilesystem);
+    };
   }
   else
   {
-    startConfiguration();
-  };
+    Serial.println("Setting AP (Access Point)");
+    WiFi.softAP("ESP-NodeRedMesh-Manager", NULL);
+    IPAddress IP = WiFi.softAPIP();
+    Serial.print("AP IP address: ");
+    Serial.println(IP);
+  }
+
+  // Ruta para configuracão da red mesh no nó
+  nodeServer.on("/", HTTP_GET, handlerNodeServeIndexHTML);
+  nodeServer.addHandler(handlerNodeConfigRedMesh);
+  nodeServer.serveStatic("/", nodeFilesystem, "/");
+  nodeServer.begin();
+
+  userScheduler.addTask(taskVerifyIfShouldReinit);
+  taskVerifyIfShouldReinit.enable();
 }
 
 void loop()
 {
-  meshNode.update();
-}
-
-void receivedCallback(uint32_t from, String &msg)
-{
-  if (msg == "root")
-    rootId = from;
+  if (nodeRedMeshConfigState)
+  {
+    meshNode.update();
+  }
   else
   {
-    JsonDocument doc;
-    deserializeJson(doc, msg);
-    if (doc.as<JsonObject>().containsKey("config"))
-    {
-      Serial.println("Recebendo configuracoes");
-      JsonArray config = doc["config"].as<JsonArray>();
-      setArchiveConfigJSON(config);
-    }
-    else if (doc.containsKey("actioner"))
-    {
-      JsonObject obj = doc["actioner"];
-      if (obj.containsKey("setStatus"))
-      {
-        int status = obj["setStatus"];
-        digitalWrite(actionerPin, status);
-      }
-    }
+    userScheduler.execute();
   }
-};
+}

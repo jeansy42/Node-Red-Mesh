@@ -2,37 +2,122 @@
 #include "FS.h"
 #include "ArduinoJson.h"
 #include "painlessMesh.h"
+#include "tasksNodeManager.h"
 
-extern uint32_t rootId;
 extern bool shouldReinit;
+extern uint32_t rootId;
 extern int actionerPin;
-extern Task taskSendActionerInformation;
+extern int doorSensor;
+extern int doorSensorState;
 extern painlessMesh meshNode;
+extern fs::FS nodeFilesystem;
+extern String nodeSsid;
+extern String nodePassword;
+extern uint16_t nodePort;
 
-void createArchiveConfigJSON()
+void createArchiveConfigJSON(fs::FS *filesystem)
 
 {
-    String path = "/config.json";
-    if (!LittleFS.exists(path))
+    const char *path = "/config.json";
+    if (!filesystem->exists(path))
     {
 
-        Serial.printf("Criando arquivo: %s", path.c_str());
-        File file = LittleFS.open(path, "w");
+        Serial.printf("Criando arquivo: %s", path);
+        File file = filesystem->open(path, "w");
         if (!file)
         {
             Serial.println("Erro ao criar o arquivo");
         }
         else
         {
-            Serial.printf("%s criado com sucesso \n", path.c_str());
+            Serial.printf("%s criado com sucesso \n", path);
         }
         file.close();
     }
 }
-
-String sendJsonResponseFromFile(String path)
+void createNodeConfigMeshIfNotExists(fs::FS *filesystem)
 {
-    if (!LittleFS.exists(path))
+    const char *path = "/configMesh.json";
+    if (!filesystem->exists(path))
+    {
+        Serial.printf("Criando arquivo: %s\n", path);
+        File file = filesystem->open(path, "w");
+        if (!file)
+        {
+            Serial.printf("Erro ao criar o arquivo %s\n", path);
+            return;
+        }
+        JsonDocument doc;
+        doc["ssid"] = "";
+        doc["password"] = "";
+        doc["port"] = "";
+        serializeJson(doc, file);
+        Serial.printf("%s criado com sucesso \n", path);
+        file.close();
+    }
+    else
+        Serial.printf("O arquivo %s ja existe\n", path);
+}
+bool isNodeRedMeshConfig()
+{
+    const char *path = "/configMesh.json";
+    createNodeConfigMeshIfNotExists(&nodeFilesystem);
+    File file = nodeFilesystem.open(path, "r");
+    if (!file)
+    {
+        Serial.printf("Erro ao abrir o arquivo %s\n", path);
+        return false;
+    }
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, file);
+    file.close();
+    if (error)
+    {
+        Serial.printf("Erro ao deserializar o arquivo %s\n", path);
+        return false;
+    }
+    if (doc["ssid"].as<String>() == "" || doc["password"].as<String>() == "" || doc["port"].as<String>() == "")
+    {
+        Serial.println("Configuracao da red mesh nao achada \n");
+        return false;
+    }
+    nodeSsid = doc["ssid"].as<String>();
+    nodePassword = doc["password"].as<String>();
+    nodePort = doc["port"].as<uint16_t>();
+    Serial.println("Configuracao da red mesh estabelecida com sucesso \n");
+    return true;
+}
+String configNodeRedMesh(JsonObject obj)
+{
+    const char *path = "/configMesh.json";
+    JsonDocument docRes;
+    createNodeConfigMeshIfNotExists(&nodeFilesystem);
+    File file = nodeFilesystem.open(path, "w");
+    if (!file)
+    {
+        Serial.printf("Erro ao abrir o arquivo %s\n", path);
+        docRes["status"] = "error";
+        docRes["msg"] = "Erro ao abrir o arquivo";
+    }
+    else
+    {
+        JsonDocument doc;
+        doc["ssid"] = obj["ssid"];
+        doc["password"] = obj["password"];
+        doc["port"] = obj["port"];
+        serializeJson(doc, file);
+        file.close();
+        docRes["status"] = "success";
+        docRes["msg"] = "Configuracao da red mesh feita com sucesso";
+        Serial.println("Reiniciando dispositivo....");
+        shouldReinit = true;
+    }
+    return docRes.as<String>();
+}
+
+String sendJsonResponseFromFile(String path, fs::FS *filesystem)
+{
+    if (!filesystem->exists(path))
     {
         JsonDocument doc;
         doc.to<JsonArray>();
@@ -40,22 +125,22 @@ String sendJsonResponseFromFile(String path)
         return emptyArray;
     }
     JsonDocument docRes;
-    File file = LittleFS.open(path, "r");
+    File file = filesystem->open(path, "r");
     deserializeJson(docRes, file);
     String response = docRes.as<String>();
     file.close();
     return response;
 }
 
-void setArchiveConfigJSON(JsonArray array)
+void setArchiveConfigJSON(JsonArray array, fs::FS *filesystem)
 {
     String path = "/config.json";
-    if (!LittleFS.exists(path))
+    if (!filesystem->exists(path))
     {
         Serial.printf("O arquivo na ruta %s no existe", path.c_str());
-        createArchiveConfigJSON();
+        createArchiveConfigJSON(&nodeFilesystem);
     };
-    File file = LittleFS.open(path, "w");
+    File file = filesystem->open(path, "w");
     if (!file)
     {
         Serial.printf("Error ao abrir o arquivo na ruta %s", path.c_str());
@@ -65,7 +150,7 @@ void setArchiveConfigJSON(JsonArray array)
         JsonDocument doc;
         for (JsonObject obj : array)
         {
-            doc.to<JsonArray>().add(obj);
+            doc.add(obj);
         };
         serializeJson(doc, file);
         file.close();
@@ -80,14 +165,32 @@ void setArchiveConfigJSON(JsonArray array)
     };
 };
 
-void waitingForConfiguratios()
+String readArchiveConfigJSON()
 {
-    Serial.println("Aguardando configuracoes....");
-}
+    const char *path = "/config.json";
+    File file = nodeFilesystem.open(path, "r");
+    if (!file)
+    {
+        Serial.println("Falho ao abrir o arquivo de configuracao.");
+        return "";
+    }
 
-void startConfiguration()
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, file);
+    file.close();
+    if (error)
+    {
+        Serial.println("Falho ao deserializar o arquivo config.json");
+        return "";
+    }
+    else
+    {
+        return doc.as<String>();
+    }
+}
+void startConfiguration(fs::FS *filesystem)
 {
-    File file = LittleFS.open("/config.json", "r");
+    File file = filesystem->open("/config.json", "r");
     if (!file)
     {
         Serial.println("Falho ao abrir o arquivo de configuracao.");
@@ -115,24 +218,23 @@ void startConfiguration()
                     Serial.println("Configuracao de atuador estabelecida");
                     taskSendActionerInformation.enable();
                 }
+                else if (module["type"] == "doorSensor")
+                {
+                    pinMode(doorSensor, INPUT);
+                    doorSensorState = digitalRead(doorSensor);
+                    Serial.println("Configuracao do sensor de porta estabelecida");
+                    taskGetDoorSensorInfo.enable();
+                    taskSendDoorSensorInfo.enable();
+                }
             }
         }
     };
 }
 
-void verifyIfShouldReinit()
-{
-    if (shouldReinit)
-    {
-        Serial.println("Reiniciando no....");
-        ESP.restart();
-    }
-}
-
 // Confire se o arquivo config.json está vacio
-bool isConfigJsonEmpty()
+bool isConfigJsonEmpty(fs::FS *filesystem)
 {
-    File file = LittleFS.open("/config.json", "r");
+    File file = filesystem->open("/config.json", "r");
     if (!file)
     {
         Serial.println("Erro ao abrir o arquivo config.json");
